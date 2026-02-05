@@ -1,20 +1,21 @@
 """
 OKX WebSocket 行情模块
-使用 python-okx 官方库的内置 WebSocket 功能（Async 版本）
+基于 websockets 库实现，不依赖 python-okx 官方 WebSocket
 """
 import asyncio
 import json
+import hmac
+import hashlib
+import base64
 import time
 import os
 from typing import Dict, Any, Optional, Callable, List
 
-# 使用 python-okx 官方库的 WebSocket (Async 版本)
-from okx.websocket.WsPublicAsync import WsPublicAsync
-from okx.websocket.WsPrivateAsync import WsPrivateAsync
+import websockets
 
 
 class OKXWS:
-    """OKX WebSocket 行情客户端（基于官方库 Async 版本）"""
+    """OKX WebSocket 行情客户端（自定义实现）"""
 
     # OKX WebSocket 端点
     WS_URL_PUBLIC = "wss://ws.okx.com:8443/ws/v5/public"
@@ -44,11 +45,16 @@ class OKXWS:
         self.passphrase = passphrase
         self.simulate = simulate
 
-        # 代理配置（支持环境变量和直接传入）
+        # 代理配置
         self.proxy = proxy or os.environ.get("OKX_PROXY", "")
-        if self.proxy:
-            print(f"[OKXWS] 使用代理: {self.proxy}")
 
+        # WebSocket 连接
+        self._ws_public: Optional[websockets.WebSocketClientProtocol] = None
+        self._ws_private: Optional[websockets.WebSocketClientProtocol] = None
+        self._running = False
+        self._tasks: List[asyncio.Task] = []
+
+        # 市场数据缓存
         self.last_price: Optional[float] = None
         self.last_ticker: Optional[Dict[str, Any]] = None
         self.last_candles: Dict[str, List[Dict]] = {}
@@ -64,11 +70,8 @@ class OKXWS:
             "balance": []
         }
 
-        # WebSocket 实例
-        self._ws_public: Optional[WsPublicAsync] = None
-        self._ws_private: Optional[WsPrivateAsync] = None
-        self._running = False
-        self._tasks: List[asyncio.Task] = []
+        if self.proxy:
+            print(f"[OKXWS] 使用代理: {self.proxy}")
 
     def on_ticker(self, callback: Callable):
         """注册 ticker 回调"""
@@ -94,6 +97,46 @@ class OKXWS:
         """注册余额更新回调"""
         self.callbacks["balance"].append(callback)
 
+    def _generate_signature(self, timestamp: str, method: str, request_path: str, body: str = "") -> str:
+        """
+        生成 API 签名
+
+        Args:
+            timestamp: 时间戳
+            method: 请求方法 (GET/POST)
+            request_path: 请求路径
+            body: 请求体
+
+        Returns:
+            签名字符串
+        """
+        if not self.api_secret:
+            raise ValueError("API Secret is required for signing")
+
+        message = timestamp + method + request_path + body
+        mac = hmac.new(
+            bytes(self.api_secret, encoding='utf8'),
+            bytes(message, encoding='utf-8'),
+            digestmod=hashlib.sha256
+        )
+        d = mac.digest()
+        return base64.b64encode(d).decode()
+
+    def _build_login_params(self) -> Dict:
+        """构建登录参数"""
+        timestamp = str(time.time())
+        sign = self._generate_signature(timestamp, "GET", "/users/self/verify")
+
+        return {
+            "op": "login",
+            "args": [{
+                "apiKey": self.api_key,
+                "passphrase": self.passphrase,
+                "timestamp": timestamp,
+                "sign": sign
+            }]
+        }
+
     def _handle_ticker(self, data: List[Dict]):
         """处理 ticker 数据"""
         if not data:
@@ -115,7 +158,7 @@ class OKXWS:
             try:
                 callback(self.last_ticker.copy())
             except Exception as e:
-                print(f"Ticker callback error: {e}")
+                print(f"[OKXWS] Ticker callback error: {e}")
 
     def _handle_candle(self, data: List[Dict], timeframe: str):
         """处理 K线数据"""
@@ -141,7 +184,7 @@ class OKXWS:
             try:
                 callback(timeframe, candles.copy())
             except Exception as e:
-                print(f"Candle callback error: {e}")
+                print(f"[OKXWS] Candle callback error: {e}")
 
     def _handle_orderbook(self, data: List[Dict]):
         """处理订单簿数据"""
@@ -163,123 +206,140 @@ class OKXWS:
             try:
                 callback(self.last_orderbook.copy())
             except Exception as e:
-                print(f"Orderbook callback error: {e}")
+                print(f"[OKXWS] Orderbook callback error: {e}")
 
-    def _handle_order(self, data: List[Dict]):
-        """处理订单更新"""
-        if not data:
-            return
-
-        for callback in self.callbacks.get("order", []):
-            try:
-                callback(data)
-            except Exception as e:
-                print(f"Order callback error: {e}")
-
-    def _handle_position(self, data: List[Dict]):
-        """处理持仓更新"""
-        if not data:
-            return
-
-        for callback in self.callbacks.get("position", []):
-            try:
-                callback(data)
-            except Exception as e:
-                print(f"Position callback error: {e}")
-
-    def _handle_balance(self, data: List[Dict]):
-        """处理余额更新"""
-        if not data:
-            return
-
-        for callback in self.callbacks.get("balance", []):
-            try:
-                callback(data)
-            except Exception as e:
-                print(f"Balance callback error: {e}")
-
-    def _public_callback(self, message: str):
-        """公共频道回调"""
+    def _handle_message(self, message: str):
+        """处理 WebSocket 消息"""
         try:
-            # 如果是字符串，先解析为 JSON
-            if isinstance(message, str):
-                message = json.loads(message)
-
-            arg = message.get("arg", {})
+            data = json.loads(message)
+            arg = data.get("arg", {})
             channel = arg.get("channel", "")
-            data = message.get("data", [])
+            msg_data = data.get("data", [])
 
+            # 登录响应
+            if data.get("event") == "login":
+                if data.get("code") == "0":
+                    print(f"[OKXWS] 登录成功")
+                else:
+                    print(f"[OKXWS] 登录失败: {data.get('msg')}")
+                return
+
+            # 订阅响应
+            if data.get("event") == "subscribe":
+                print(f"[OKXWS] 订阅成功: {arg}")
+                return
+
+            # 数据消息
             if channel == "tickers":
-                self._handle_ticker(data)
+                self._handle_ticker(msg_data)
             elif channel.startswith("candle"):
                 timeframe = channel.replace("candle", "")
-                self._handle_candle(data, timeframe)
+                self._handle_candle(msg_data, timeframe)
             elif channel == "books":
-                self._handle_orderbook(data)
-        except Exception as e:
-            print(f"Public callback error: {e}, message: {message}")
-
-    def _private_callback(self, message: str):
-        """私有频道回调"""
-        try:
-            # 如果是字符串，先解析为 JSON
-            if isinstance(message, str):
-                message = json.loads(message)
-
-            arg = message.get("arg", {})
-            channel = arg.get("channel", "")
-            data = message.get("data", [])
-
-            if channel == "orders":
-                self._handle_order(data)
+                self._handle_orderbook(msg_data)
+            elif channel == "orders":
+                # 订单更新
+                for callback in self.callbacks.get("order", []):
+                    try:
+                        callback(msg_data)
+                    except Exception as e:
+                        print(f"[OKXWS] Order callback error: {e}")
             elif channel == "positions":
-                self._handle_position(data)
-            elif channel == "balance_and_position":
-                self._handle_balance(data)
-        except Exception as e:
-            print(f"Private callback error: {e}, message: {message}")
+                # 持仓更新
+                for callback in self.callbacks.get("position", []):
+                    try:
+                        callback(msg_data)
+                    except Exception as e:
+                        print(f"[OKXWS] Position callback error: {e}")
+            elif channel == "account" or channel == "balance_and_position":
+                # 余额更新
+                for callback in self.callbacks.get("balance", []):
+                    try:
+                        callback(msg_data)
+                    except Exception as e:
+                        print(f"[OKXWS] Balance callback error: {e}")
 
-    async def _connect_with_retry(self, ws_client, name: str, max_retries: int = 3, check_interval: float = 0.5):
+        except json.JSONDecodeError as e:
+            print(f"[OKXWS] JSON 解析错误: {e}")
+        except Exception as e:
+            print(f"[OKXWS] 消息处理错误: {e}")
+
+    async def _connect_ws(self, url: str, name: str) -> websockets.WebSocketClientProtocol:
         """
-        带重试的 WebSocket 连接
+        连接 WebSocket
 
         Args:
-            ws_client: WebSocket 客户端实例
-            name: 连接名称（用于日志）
-            max_retries: 最大重试次数
-            check_interval: 检查间隔（秒）
+            url: WebSocket URL
+            name: 连接名称
 
-        Raises:
-            Exception: 连接失败时抛出异常
+        Returns:
+            WebSocket 连接对象
         """
-        for retry in range(max_retries):
-            try:
-                print(f"[OKXWS] 尝试连接 {name} (第 {retry + 1}/{max_retries} 次)...")
+        extra_headers = {}
 
-                # 执行连接
-                await ws_client.connect()
+        # 代理支持
+        if self.proxy:
+            # websockets 不直接支持代理，需要通过 httpx 的 AsyncClient
+            print(f"[OKXWS] 注意: websockets 库对代理支持有限，代理可能不生效")
+            print(f"[OKXWS] 代理地址: {self.proxy}")
 
-                # 等待连接真正建立
-                print(f"[OKXWS] 等待 {name} 连接建立...")
-                for i in range(20):  # 最多等待 10 秒
-                    if ws_client.websocket is not None:
-                        print(f"[OKXWS] {name} 连接建立成功")
-                        return
-                    await asyncio.sleep(check_interval)
+        print(f"[OKXWS] 正在连接 {name}: {url}")
 
-                # 连接超时
-                raise Exception(f"{name} 连接对象创建超时")
+        ws = await asyncio.wait_for(
+            websockets.connect(url, extra_headers=extra_headers),
+            timeout=10
+        )
 
-            except Exception as e:
-                print(f"[OKXWS] {name} 连接失败: {e}")
+        print(f"[OKXWS] {name} 连接成功")
+        return ws
 
-                # 如果不是最后一次重试，等待后重试
-                if retry < max_retries - 1:
-                    wait_time = (retry + 1) * 2  # 递增等待时间
-                    print(f"[OKXWS] {wait_time} 秒后重试...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise Exception(f"{name} 连接失败，已达到最大重试次数 ({max_retries})")
+    async def _subscribe_channel(self, ws: websockets.WebSocketClientProtocol, channels: List[Dict]):
+        """
+        订阅频道
+
+        Args:
+            ws: WebSocket 连接
+            channels: 频道列表
+        """
+        msg = {
+            "op": "subscribe",
+            "args": channels
+        }
+
+        await ws.send(json.dumps(msg))
+        print(f"[OKXWS] 已发送订阅请求: {[c['channel'] for c in channels]}")
+
+    async def _login(self, ws: websockets.WebSocketClientProtocol):
+        """
+        登录私有频道
+
+        Args:
+            ws: WebSocket 连接
+        """
+        if not self.api_key or not self.api_secret or not self.passphrase:
+            raise ValueError("API Key, Secret and Passphrase are required for login")
+
+        login_params = self._build_login_params()
+        await ws.send(json.dumps(login_params))
+        print(f"[OKXWS] 已发送登录请求")
+
+    async def _consume_messages(self, ws: websockets.WebSocketClientProtocol, name: str):
+        """
+        消费消息
+
+        Args:
+            ws: WebSocket 连接
+            name: 连接名称
+        """
+        try:
+            async for message in ws:
+                if not self._running:
+                    break
+                self._handle_message(message)
+        except websockets.exceptions.ConnectionClosed:
+            print(f"[OKXWS] {name} 连接已关闭")
+        except Exception as e:
+            print(f"[OKXWS] {name} 消息消费错误: {e}")
 
     async def start(self, public_channels: Optional[List[Dict]] = None, private_channels: Optional[List[Dict]] = None):
         """
@@ -301,12 +361,6 @@ class OKXWS:
             await self._simulate_data()
             return
 
-        # 设置代理（如果配置了）
-        if self.proxy:
-            os.environ['HTTP_PROXY'] = self.proxy
-            os.environ['HTTPS_PROXY'] = self.proxy
-            print(f"[OKXWS] 已设置代理: {self.proxy}")
-
         # 确定 WebSocket URL
         public_url = self.WS_URL_PUBLIC_DEMO if self.flag == "1" else self.WS_URL_PUBLIC
         private_url = self.WS_URL_PRIVATE_DEMO if self.flag == "1" else self.WS_URL_PRIVATE
@@ -321,43 +375,33 @@ class OKXWS:
                     {"channel": "books", "instId": self.symbol}
                 ]
 
-            # 启动公共频道（带重试）
+            # 启动公共频道
             if public_channels:
-                print(f"[OKXWS] 启动公共频道 WebSocket: {public_url}")
-                self._ws_public = WsPublicAsync(url=public_url)
-
-                # 带重试的连接
-                await self._connect_with_retry(self._ws_public, "公共频道")
+                print(f"[OKXWS] 启动公共频道 WebSocket")
+                self._ws_public = await self._connect_ws(public_url, "公共频道")
 
                 # 订阅
-                await self._ws_public.subscribe(public_channels, self._public_callback)
-                print(f"[OKXWS] 公共频道订阅成功: {[c['channel'] for c in public_channels]}")
+                await self._subscribe_channel(self._ws_public, public_channels)
 
                 # 启动消费任务
-                self._tasks.append(asyncio.create_task(self._ws_public.consume()))
+                self._tasks.append(asyncio.create_task(self._consume_messages(self._ws_public, "公共频道")))
 
             # 启动私有频道（如果有 API Key）
             if private_channels and self.api_key and self.api_secret and self.passphrase:
                 print(f"[OKXWS] 启动私有频道 WebSocket")
-                self._ws_private = WsPrivateAsync(
-                    url=private_url,
-                    api_key=self.api_key,
-                    passphrase=self.passphrase,
-                    secret_key=self.api_secret
-                )
-
-                # 带重试的连接
-                await self._connect_with_retry(self._ws_private, "私有频道")
+                self._ws_private = await self._connect_ws(private_url, "私有频道")
 
                 # 登录
-                await self._ws_private.login()
+                await self._login(self._ws_private)
+
+                # 等待登录响应
+                await asyncio.sleep(1)
 
                 # 订阅
-                await self._ws_private.subscribe(private_channels, self._private_callback)
-                print(f"[OKXWS] 私有频道订阅成功: {[c['channel'] for c in private_channels]}")
+                await self._subscribe_channel(self._ws_private, private_channels)
 
                 # 启动消费任务
-                self._tasks.append(asyncio.create_task(self._ws_private.consume()))
+                self._tasks.append(asyncio.create_task(self._consume_messages(self._ws_private, "私有频道")))
 
             print("[OKXWS] WebSocket 启动完成")
 
@@ -391,17 +435,17 @@ class OKXWS:
         self._tasks.clear()
 
         # 关闭连接
-        if self._ws_public and self._ws_public.websocket:
+        if self._ws_public:
             try:
-                await self._ws_public.websocket.close()
+                await self._ws_public.close()
                 print("[OKXWS] 公共频道已停止")
             except Exception as e:
                 print(f"[OKXWS] 停止公共频道错误: {e}")
             self._ws_public = None
 
-        if self._ws_private and self._ws_private.websocket:
+        if self._ws_private:
             try:
-                await self._ws_private.websocket.close()
+                await self._ws_private.close()
                 print("[OKXWS] 私有频道已停止")
             except Exception as e:
                 print(f"[OKXWS] 停止私有频道错误: {e}")
@@ -428,7 +472,7 @@ class OKXWS:
         return self._running
 
     async def _simulate_data(self):
-        """生成模拟数据（用于测试或网络不可用时）"""
+        """生成模拟数据（用于测试）"""
         import random
 
         print("[OKXWS] 开始生成模拟数据...")
@@ -568,79 +612,3 @@ class PriceCache:
     def size(self) -> int:
         """获取缓存大小"""
         return len(self.prices)
-
-    async def _simulate_data(self):
-        """生成模拟数据（用于测试或网络不可用时）"""
-        import random
-
-        print("[OKXWS] 开始生成模拟数据...")
-
-        # 初始化价格
-        price = 3200.0
-
-        while self._running:
-            # 模拟价格波动
-            price += (random.random() * 20 - 10)
-            self.last_price = price
-
-            # 模拟 ticker
-            self.last_ticker = {
-                "last": price,
-                "bid": price - 1,
-                "ask": price + 1,
-                "volume_24h": 1000000 + random.random() * 100000,
-                "change_24h": (random.random() * 4 - 2),
-                "timestamp": str(int(time.time() * 1000))
-            }
-
-            # 触发 ticker 回调
-            for callback in self.callbacks.get("ticker", []):
-                try:
-                    callback(self.last_ticker.copy())
-                except Exception as e:
-                    print(f"Ticker callback error: {e}")
-
-            # 模拟订单簿
-            self.last_orderbook = {
-                "asks": [[price + (i + 1) * 0.5, random.randint(1, 100)] for i in range(5)],
-                "bids": [[price - (i + 1) * 0.5, random.randint(1, 100)] for i in range(5)],
-                "timestamp": str(int(time.time() * 1000))
-            }
-
-            # 触发订单簿回调
-            for callback in self.callbacks.get("orderbook", []):
-                try:
-                    callback(self.last_orderbook.copy())
-                except Exception as e:
-                    print(f"Orderbook callback error: {e}")
-
-            # 模拟 K线（每秒生成一个点）
-            if not self.last_candles.get("5m"):
-                self.last_candles["5m"] = []
-
-            candle = {
-                "timestamp": str(int(time.time() * 1000)),
-                "open": price - random.random() * 5,
-                "high": price + random.random() * 5,
-                "low": price - random.random() * 5,
-                "close": price,
-                "volume": random.randint(100, 1000),
-                "volume_ccy": random.randint(100, 1000) * price
-            }
-
-            self.last_candles["5m"].append(candle)
-
-            # 限制 K线数量
-            if len(self.last_candles["5m"]) > 100:
-                self.last_candles["5m"].pop(0)
-
-            # 触发 K线回调
-            for callback in self.callbacks.get("candle", []):
-                try:
-                    callback("5m", [candle])
-                except Exception as e:
-                    print(f"Candle callback error: {e}")
-
-            # 等待
-            await asyncio.sleep(1)
-
