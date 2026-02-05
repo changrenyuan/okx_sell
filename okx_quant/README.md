@@ -53,17 +53,30 @@ pip install python-okx pyyaml loguru numpy
 
 编辑 `config/params.yaml`，填入你的 OKX API 信息：
 
+```bash
+# 如果没有配置文件，先复制模板
+cp config/params.yaml.example config/params.yaml
+
+# 编辑配置
+nano config/params.yaml
+```
+
 ```yaml
 api:
   key: "YOUR_API_KEY"
   secret: "YOUR_API_SECRET"
   passphrase: "YOUR_API_PASSPHRASE"
   flag: "0"  # 0=实盘，1=模拟盘
+
+# 代理配置（可选，解决网络问题）
+proxy: ""  # 示例: "http://127.0.0.1:7890"
 ```
 
 **⚠️ 重要提示**：
+- `config/params.yaml` 包含敏感信息，不会被 Git 追踪，不会在更新时被覆盖
 - API 只需要开启交易权限，**不要开启提现权限**
 - 建议先使用模拟盘测试（flag: "1"）
+- 如果遇到网络连接问题，可以配置代理（详见 [配置文件管理说明](docs/CONFIG.md)）
 
 ### 3. 运行程序
 
