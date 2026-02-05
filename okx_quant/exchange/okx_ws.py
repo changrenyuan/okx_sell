@@ -275,18 +275,15 @@ class OKXWS:
         Returns:
             WebSocket 连接对象
         """
-        extra_headers = {}
-
-        # 代理支持
+        # 代理支持提示
         if self.proxy:
-            # websockets 不直接支持代理，需要通过 httpx 的 AsyncClient
-            print(f"[OKXWS] 注意: websockets 库对代理支持有限，代理可能不生效")
-            print(f"[OKXWS] 代理地址: {self.proxy}")
+            print(f"[OKXWS] 注意: websockets 库对代理支持有限")
+            print(f"[OKXWS] 如需代理，建议使用系统代理或通过环境变量设置")
 
         print(f"[OKXWS] 正在连接 {name}: {url}")
 
         ws = await asyncio.wait_for(
-            websockets.connect(url, extra_headers=extra_headers),
+            websockets.connect(url),
             timeout=10
         )
 
