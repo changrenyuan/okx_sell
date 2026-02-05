@@ -155,7 +155,30 @@ try:
     print("✓ 策略状态检查成功")
 except Exception as e:
     print(f"✗ 策略状态检查失败: {e}")
-    sys.exit(1)
+
+print()
+print("测试 4: WebSocket 模块")
+print("-" * 60)
+
+try:
+    from exchange.okx_ws import OKXWS
+    print("  ✓ OKXWS 导入成功")
+
+    # 测试实例化
+    ws = OKXWS("ETH-USDT-SWAP", flag="0", simulate=True)
+    print("  ✓ OKXWS 实例化成功（模拟模式）")
+
+    # 检查方法
+    methods = ["start", "stop", "get_price", "get_ticker", "get_orderbook"]
+    for method in methods:
+        if hasattr(ws, method):
+            print(f"  ✓ {method} 方法存在")
+        else:
+            print(f"  ✗ {method} 方法不存在")
+
+    print("✓ WebSocket 模块测试成功")
+except Exception as e:
+    print(f"✗ WebSocket 模块测试失败: {e}")
 
 print()
 

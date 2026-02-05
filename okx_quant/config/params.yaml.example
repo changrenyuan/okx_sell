@@ -1,0 +1,48 @@
+# OKX 量化交易机器人配置文件示例
+
+# API 配置
+api:
+  key: "your_api_key_here"
+  secret: "your_api_secret_here"
+  passphrase: "your_passphrase_here"
+  flag: "1"  # 0=实盘，1=模拟盘
+
+# 交易配置
+trade:
+  symbol: "ETH-USDT-SWAP"  # 交易对
+  leverage: 5  # 杠杆倍数
+  position_size: 0.1  # 持仓数量（ETH）
+  margin_mode: "isolated"  # 保证金模式：isolated=逐仓，cross=全仓
+
+# 模拟模式（用于测试，不连接真实 WebSocket）
+simulate: false
+
+# 策略配置
+strategy:
+  # 过热回落做空策略
+  overheat_short:
+    enabled: true
+    daily_change_threshold: 5.0  # 日涨幅阈值（%）
+    rsi_threshold: 70  # RSI 阈值
+    volume_ratio_threshold: 1.5  # 成交量倍数
+
+  # 趋势做多策略
+  trend_long:
+    enabled: true
+    rsi_threshold: 30  # RSI 阈值
+    volume_ratio_threshold: 1.5  # 成交量倍数
+    atr_multiplier: 1.5  # ATR 倍数
+
+# 止损止盈配置
+risk:
+  stop_loss_pct: 2.0  # 止损百分比
+  take_profit_pct: 5.0  # 止盈百分比
+  max_daily_loss_pct: 3.0  # 最大日亏损百分比
+  max_drawdown_pct: 5.0  # 最大回撤百分比
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/quant_bot.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5

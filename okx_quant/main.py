@@ -60,7 +60,8 @@ class QuantBot:
         # 初始化 WebSocket
         self.ws = OKXWS(
             symbol=trade_config.get("symbol", "ETH-USDT-SWAP"),
-            flag=api_config.get("flag", "0")
+            flag=api_config.get("flag", "0"),
+            simulate=self.config.get("simulate", False)  # 支持模拟模式
         )
 
         # 运行状态
