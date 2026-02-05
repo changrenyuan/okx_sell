@@ -3,10 +3,10 @@
 负责整合市场数据、状态检测、策略判断，生成交易信号
 """
 from typing import Dict, Any, Optional
-from ..market.state_detector import StateDetector, MarketState
-from ..market.indicators import MarketDataProcessor
-from ..strategy.overheat_short import OverheatShortStrategy
-from ..strategy.trend_long import TrendLongStrategy
+from market.state_detector import StateDetector, MarketState
+from market.indicators import MarketDataProcessor
+from strategy.overheat_short import OverheatShortStrategy
+from strategy.trend_long import TrendLongStrategy
 
 
 class SignalEngine:
