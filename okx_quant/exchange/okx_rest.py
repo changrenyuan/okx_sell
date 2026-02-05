@@ -2,7 +2,9 @@
 OKX REST API 封装
 提供账户、交易、市场数据等功能的统一接口
 """
-from okx import Trade, Account, Market
+import okx.Trade as Trade
+import okx.Account as Account
+import okx.MarketData as MarketData
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -23,7 +25,7 @@ class OKXRest:
         self.flag = flag
         self.trade = Trade.TradeAPI(api_key, api_secret, passphrase, flag=flag)
         self.account = Account.AccountAPI(api_key, api_secret, passphrase, flag=flag)
-        self.market = Market.MarketAPI(api_key, api_secret, passphrase, flag=flag)
+        self.market = MarketData.MarketAPI(api_key, api_secret, passphrase, flag=flag)
 
     def get_equity(self, ccy: str = "USDT") -> float:
         """
