@@ -71,5 +71,6 @@ Thumbs.db
 
 # Sensitive data
 config.yaml
+config/params.yaml
 *.pem
 *.key
