@@ -61,7 +61,8 @@ class QuantBot:
         self.ws = OKXWS(
             symbol=trade_config.get("symbol", "ETH-USDT-SWAP"),
             flag=api_config.get("flag", "0"),
-            simulate=self.config.get("simulate", False)  # 支持模拟模式
+            simulate=self.config.get("simulate", False),  # 支持模拟模式
+            proxy=self.config.get("proxy", "")  # 代理配置
         )
 
         # 运行状态

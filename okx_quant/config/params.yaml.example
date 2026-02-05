@@ -7,6 +7,12 @@ api:
   passphrase: "your_passphrase_here"
   flag: "1"  # 0=实盘，1=模拟盘
 
+# WebSocket 代理配置（可选）
+# 如果访问 OKX 官方域名遇到网络问题，可以配置代理
+# 支持格式: "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"
+# 也可以通过环境变量 OKX_PROXY 设置
+proxy: ""  # 示例: "http://127.0.0.1:7890"
+
 # 交易配置
 trade:
   symbol: "ETH-USDT-SWAP"  # 交易对
@@ -46,3 +52,4 @@ logging:
   file: "logs/quant_bot.log"
   max_size: 10485760  # 10MB
   backup_count: 5
+

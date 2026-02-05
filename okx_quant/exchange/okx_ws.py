@@ -5,6 +5,7 @@ OKX WebSocket 行情模块
 import asyncio
 import json
 import time
+import os
 from typing import Dict, Any, Optional, Callable, List
 
 # 使用 python-okx 官方库的 WebSocket (Async 版本)
@@ -18,9 +19,12 @@ class OKXWS:
     # OKX WebSocket 端点
     WS_URL_PUBLIC = "wss://ws.okx.com:8443/ws/v5/public"
     WS_URL_PRIVATE = "wss://ws.okx.com:8443/ws/v5/private"
+    WS_URL_PUBLIC_DEMO = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
+    WS_URL_PRIVATE_DEMO = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
 
     def __init__(self, symbol: str, flag: str = "0", api_key: Optional[str] = None,
-                 api_secret: Optional[str] = None, passphrase: Optional[str] = None, simulate: bool = False):
+                 api_secret: Optional[str] = None, passphrase: Optional[str] = None,
+                 simulate: bool = False, proxy: Optional[str] = None):
         """
         初始化 WebSocket 客户端
 
@@ -31,6 +35,7 @@ class OKXWS:
             api_secret: API Secret（私有频道需要）
             passphrase: API Passphrase（私有频道需要）
             simulate: 是否使用模拟模式（不连接真实 WebSocket）
+            proxy: 代理地址，格式如 "http://127.0.0.1:7890"
         """
         self.symbol = symbol
         self.flag = flag
@@ -38,6 +43,11 @@ class OKXWS:
         self.api_secret = api_secret
         self.passphrase = passphrase
         self.simulate = simulate
+
+        # 代理配置（支持环境变量和直接传入）
+        self.proxy = proxy or os.environ.get("OKX_PROXY", "")
+        if self.proxy:
+            print(f"[OKXWS] 使用代理: {self.proxy}")
 
         self.last_price: Optional[float] = None
         self.last_ticker: Optional[Dict[str, Any]] = None
@@ -229,6 +239,48 @@ class OKXWS:
         except Exception as e:
             print(f"Private callback error: {e}, message: {message}")
 
+    async def _connect_with_retry(self, ws_client, name: str, max_retries: int = 3, check_interval: float = 0.5):
+        """
+        带重试的 WebSocket 连接
+
+        Args:
+            ws_client: WebSocket 客户端实例
+            name: 连接名称（用于日志）
+            max_retries: 最大重试次数
+            check_interval: 检查间隔（秒）
+
+        Raises:
+            Exception: 连接失败时抛出异常
+        """
+        for retry in range(max_retries):
+            try:
+                print(f"[OKXWS] 尝试连接 {name} (第 {retry + 1}/{max_retries} 次)...")
+
+                # 执行连接
+                await ws_client.connect()
+
+                # 等待连接真正建立
+                print(f"[OKXWS] 等待 {name} 连接建立...")
+                for i in range(20):  # 最多等待 10 秒
+                    if ws_client.websocket is not None:
+                        print(f"[OKXWS] {name} 连接建立成功")
+                        return
+                    await asyncio.sleep(check_interval)
+
+                # 连接超时
+                raise Exception(f"{name} 连接对象创建超时")
+
+            except Exception as e:
+                print(f"[OKXWS] {name} 连接失败: {e}")
+
+                # 如果不是最后一次重试，等待后重试
+                if retry < max_retries - 1:
+                    wait_time = (retry + 1) * 2  # 递增等待时间
+                    print(f"[OKXWS] {wait_time} 秒后重试...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise Exception(f"{name} 连接失败，已达到最大重试次数 ({max_retries})")
+
     async def start(self, public_channels: Optional[List[Dict]] = None, private_channels: Optional[List[Dict]] = None):
         """
         启动 WebSocket 连接
@@ -249,13 +301,15 @@ class OKXWS:
             await self._simulate_data()
             return
 
-        # 确定 WebSocket URL
-        public_url = self.WS_URL_PUBLIC
-        private_url = self.WS_URL_PRIVATE
+        # 设置代理（如果配置了）
+        if self.proxy:
+            os.environ['HTTP_PROXY'] = self.proxy
+            os.environ['HTTPS_PROXY'] = self.proxy
+            print(f"[OKXWS] 已设置代理: {self.proxy}")
 
-        if self.flag == "1":
-            public_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
-            private_url = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
+        # 确定 WebSocket URL
+        public_url = self.WS_URL_PUBLIC_DEMO if self.flag == "1" else self.WS_URL_PUBLIC
+        private_url = self.WS_URL_PRIVATE_DEMO if self.flag == "1" else self.WS_URL_PRIVATE
 
         try:
             # 默认公共频道
@@ -267,13 +321,13 @@ class OKXWS:
                     {"channel": "books", "instId": self.symbol}
                 ]
 
-            # 启动公共频道
+            # 启动公共频道（带重试）
             if public_channels:
                 print(f"[OKXWS] 启动公共频道 WebSocket: {public_url}")
                 self._ws_public = WsPublicAsync(url=public_url)
 
-                # 先连接
-                await self._ws_public.connect()
+                # 带重试的连接
+                await self._connect_with_retry(self._ws_public, "公共频道")
 
                 # 订阅
                 await self._ws_public.subscribe(public_channels, self._public_callback)
@@ -292,8 +346,8 @@ class OKXWS:
                     secret_key=self.api_secret
                 )
 
-                # 先连接
-                await self._ws_private.connect()
+                # 带重试的连接
+                await self._connect_with_retry(self._ws_private, "私有频道")
 
                 # 登录
                 await self._ws_private.login()
